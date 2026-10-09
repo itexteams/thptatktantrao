@@ -8,8 +8,6 @@
     <!-- KẾT NỐI THƯ VIỆN FIREBASE -->
     <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
-    <!-- THÊM THƯ VIỆN FIREBASE STORAGE -->
-    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
 
     <!-- KẾT NỐI THƯ VIỆN VẼ BIỂU ĐỒ CHART.JS -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -323,9 +321,10 @@
             </div>
         </div>
 
-        <!-- ĐÍNH KÈM VĂN BẢN (TÍNH NĂNG MỚI) -->
+        <!-- ĐÍNH KÈM VĂN BẢN (KHÔNG DÙNG STORAGE TRẢ PHÍ) -->
         <div style="background: #e9ecef; padding: 15px; border-radius: 5px; margin-bottom: 15px; border: 1px solid #ccc;">
-            <h4 style="margin-top: 0; color: #0056b3;">Đính kèm văn bản (PDF, DOCX...)</h4>
+            <h4 style="margin-top: 0; color: #0056b3;">Đính kèm văn bản (Giới hạn: Dưới 2.5MB / file)</h4>
+            <p style="font-size: 13px; color: #666; margin-top: 0;"><i>Hệ thống lưu trữ miễn phí có dung lượng giới hạn, vui lòng <b>nén nhẹ file PDF</b> trước khi tải lên.</i></p>
             <input type="file" id="m-files" multiple onchange="handleFileUpload(event)">
             <div id="upload-status" style="margin-top: 10px; font-size: 13px; color: #d33;"></div>
             <ul id="file-list-preview" style="list-style: none; padding: 0; margin-top: 10px;"></ul>
@@ -356,7 +355,7 @@
                 <table style="width: 100%; padding-left: 2mm;">
                     <tr>
                         <td style="width: 42%; text-align: center; vertical-align: top;">
-                            <div id="header-line1" style="font-size: 12pt; white-space: nowrap;">TRƯỜNG THPT ATK TÂN TRÀO</div>
+                            <div id="header-line1" style="font-size: 12pt; white-space: nowrap;">TRƯỜNG THPT ATK Tân Trào</div>
                             <div id="header-line2" style="font-size: 13pt; font-weight: bold; text-decoration: underline;">TỔ TOÁN – TIN</div>
                         </td>
                         <td style="width: 58%; text-align: center; vertical-align: top;">
@@ -494,7 +493,7 @@
             authDomain: "toantin-d32b2.firebaseapp.com",
             databaseURL: "https://toantin-d32b2-default-rtdb.firebaseio.com",
             projectId: "toantin-d32b2",
-            storageBucket: "toantin-d32b2.firebasestorage.app",
+            // ĐÃ BỎ STORAGE VÌ FIREBASE BẮT TRẢ TIỀN
             messagingSenderId: "416212565318",
             appId: "1:416212565318:web:9480d4d2951c71a0b8f947",
             measurementId: "G-TZB62HZQ7X"
@@ -502,7 +501,6 @@
         firebase.initializeApp(firebaseConfig);
         
         const db = firebase.database();
-        const storage = firebase.storage(); 
 
         // ==========================================
         // MÃ ĐỊNH DANH TRANG (PAGE_ID)
@@ -648,7 +646,16 @@
         
         function insertPlaceholder() { const contentArea = document.getElementById('m-content'); const cursorPosition = contentArea.selectionStart; const textBefore = contentArea.value.substring(0, cursorPosition); const textAfter = contentArea.value.substring(cursorPosition); contentArea.value = textBefore + (textBefore.endsWith('\n') || textBefore === '' ? '' : '\n') + "[BANG]\n" + textAfter; contentArea.focus(); }
 
-        // --- Hàm xử lý tải file lên Firebase Storage ---
+        // --- XỬ LÝ LƯU FILE MIỄN PHÍ VÀO REALTIME DATABASE (DẠNG BASE64) ---
+        function readFileAsBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = error => reject(error);
+                reader.readAsDataURL(file);
+            });
+        }
+
         async function handleFileUpload(event) {
             const files = event.target.files;
             const statusDiv = document.getElementById('upload-status');
@@ -656,39 +663,53 @@
             const saveBtn = document.getElementById('btn-save-item');
             
             if (files.length === 0) return;
-            statusDiv.innerHTML = "Đang tải file lên... Vui lòng đợi!";
-            saveBtn.disabled = true; // Khóa nút Đăng
+            statusDiv.innerHTML = "Đang xử lý file... Vui lòng đợi!";
+            saveBtn.disabled = true; 
+
+            const MAX_FILE_SIZE = 2.5 * 1024 * 1024; // Giới hạn 2.5MB để tránh đầy 1GB miễn phí
 
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
-                // Sử dụng PAGE_ID để tạo thư mục độc lập
-                const storageRef = storage.ref(`${PAGE_ID}_vanban/${Date.now()}_${file.name}`);
                 
+                // Kiểm tra dung lượng
+                if (file.size > MAX_FILE_SIZE) {
+                    alert(`File "${file.name}" quá lớn. Vui lòng nén file xuống dưới 2.5MB để tiết kiệm bộ nhớ máy chủ miễn phí!`);
+                    continue;
+                }
+
                 try {
-                    const snapshot = await storageRef.put(file);
-                    const downloadURL = await snapshot.ref.getDownloadURL();
+                    const base64String = await readFileAsBase64(file);
+                    const fileId = 'file_' + Date.now() + '_' + i;
                     
                     uploadedFiles.push({
+                        id: fileId,
                         name: file.name,
-                        url: downloadURL,
-                        type: file.type
+                        type: file.type,
+                        dataUrl: base64String // Tạm lưu trong bộ nhớ, ấn "Đăng" mới đẩy lên DB
                     });
                     
-                    previewList.innerHTML += `<li style="margin-bottom: 5px; color: green; font-weight: bold;">✅ ${file.name}</li>`;
+                    previewList.innerHTML += `<li style="margin-bottom: 5px; color: green; font-weight: bold;">✅ Đã xử lý: ${file.name}</li>`;
                 } catch (error) {
-                    console.error("Lỗi up file:", error);
-                    alert("Lỗi tải lên: " + file.name);
+                    console.error("Lỗi mã hóa file:", error);
+                    alert("Lỗi xử lý: " + file.name);
                 }
             }
             
-            statusDiv.innerHTML = "<span style='color: green; font-weight: bold;'>Đã tải lên xong!</span>";
-            saveBtn.disabled = false; // Mở lại nút Đăng
+            statusDiv.innerHTML = "<span style='color: green; font-weight: bold;'>Đã sẵn sàng đăng!</span>";
+            saveBtn.disabled = false;
         }
 
         function saveItem() {
             const title = document.getElementById('m-title').value.trim(); const time = document.getElementById('m-time').value; const deadline = document.getElementById('m-deadline').value; const content = document.getElementById('m-content').value.trim();
             if (!title || !content) return alert('Nhập đủ Tiêu đề và Nội dung!');
             
+            // Tách dữ liệu base64 khổng lồ ra để lưu riêng, tránh làm nặng danh sách cuộc họp
+            const attachedFilesInfo = uploadedFiles.map(f => ({
+                id: f.id,
+                name: f.name,
+                type: f.type
+            }));
+
             const newItem = { 
                 id: Date.now(), 
                 title: title, 
@@ -700,8 +721,13 @@
                 comments: [], 
                 dynamicTable: dynamicTableData, 
                 tableConfig: { colWidths: dynamicColWidths, rowHeights: dynamicRowHeights },
-                files: uploadedFiles // Lưu mảng file đính kèm
+                files: attachedFilesInfo // Chỉ lưu thông tin cơ bản
             };
+
+            // Đẩy ruột file (base64) lên thư mục riêng trong Database
+            uploadedFiles.forEach(f => {
+                db.ref(`${PAGE_ID}_files/${f.id}`).set(f.dataUrl);
+            });
             
             if (currentCreateType === 'meeting') {
                 meetings.push(newItem);
@@ -720,12 +746,22 @@
             document.getElementById('m-files').value = '';
             document.getElementById('file-list-preview').innerHTML = '';
             document.getElementById('upload-status').innerHTML = '';
-            uploadedFiles = []; // Reset mảng file sau khi lưu
+            uploadedFiles = []; // Reset
             showScreen('main-app');
         }
 
         function deleteItem(id, type) { 
-            if (confirm(`XÓA bản ghi này?`)) { 
+            if (confirm(`XÓA bản ghi này? Các file đính kèm cũng sẽ bị xóa khỏi máy chủ.`)) { 
+                let items = (type === 'meeting') ? meetings : documentsData;
+                const itemToDelete = items.find(x => x.id === id);
+
+                // Gỡ bỏ file đính kèm trong thư mục riêng để dọn rác (tiết kiệm 1GB)
+                if (itemToDelete && itemToDelete.files) {
+                    itemToDelete.files.forEach(f => {
+                        db.ref(`${PAGE_ID}_files/${f.id}`).remove();
+                    });
+                }
+
                 if (type === 'meeting') {
                     meetings = meetings.filter(x => x.id !== id); db.ref(`${PAGE_ID}_meetings`).set(meetings); 
                 } else {
@@ -744,7 +780,7 @@
                 let actionBtns = (isLocked && currentUser.role !== 'admin') ? `<button class="btn-disabled">Đã khóa</button>` : `<button onclick="viewItem(${m.id}, 'meeting')">Tham gia / Xem</button>`;
                 if (currentUser.role === 'admin') actionBtns += `<button class="btn-danger" style="margin-left: 5px;" onclick="deleteItem(${m.id}, 'meeting')">Xóa</button>`;
                 
-                let fileIndicator = (m.files && m.files.length > 0) ? `<span style="margin-left: 10px; color: #28a745; font-size: 12px; font-weight: bold;">📎 ${m.files.length} Tệp đính kèm</span>` : '';
+                let fileIndicator = (m.files && m.files.length > 0) ? `<span style="margin-left: 10px; color: #28a745; font-size: 12px; font-weight: bold;">📎 ${m.files.length} đính kèm</span>` : '';
                 
                 div.innerHTML = `<div><h4 style="margin: 0 0 5px 0; color: #0056b3;">${m.title} ${isLocked ? '<span style="color: red; font-size:12px;">(Đã khóa)</span>' : ''}</h4><small>Chủ tọa: ${m.host} | Số ý kiến: ${commentCount} ${fileIndicator}</small></div><div>${actionBtns}</div>`; listDiv.appendChild(div);
             });
@@ -759,7 +795,7 @@
                 let actionBtns = (isLocked && currentUser.role !== 'admin') ? `<button class="btn-disabled">Đã khóa</button>` : `<button onclick="viewItem(${m.id}, 'document')">Tham gia / Xem</button>`;
                 if (currentUser.role === 'admin') actionBtns += `<button class="btn-danger" style="margin-left: 5px;" onclick="deleteItem(${m.id}, 'document')">Xóa</button>`;
                 
-                let fileIndicator = (m.files && m.files.length > 0) ? `<span style="margin-left: 10px; color: #28a745; font-size: 12px; font-weight: bold;">📎 ${m.files.length} Tệp đính kèm</span>` : '';
+                let fileIndicator = (m.files && m.files.length > 0) ? `<span style="margin-left: 10px; color: #28a745; font-size: 12px; font-weight: bold;">📎 ${m.files.length} đính kèm</span>` : '';
 
                 div.innerHTML = `<div><h4 style="margin: 0 0 5px 0; color: #0056b3;">${m.title} ${isLocked ? '<span style="color: red; font-size:12px;">(Đã khóa)</span>' : ''}</h4><small>Người ban hành: ${m.host} | Số ý kiến: ${commentCount} ${fileIndicator}</small></div><div>${actionBtns}</div>`; listDiv.appendChild(div);
             });
@@ -885,7 +921,7 @@
             const arr = getContextArray();
             const m = arr.find(x => x.id === id);
             
-            // Xử lý hiển thị danh sách file đính kèm
+            // Xử lý hiển thị danh sách file đính kèm (Lấy từ Database)
             const attachmentSection = document.getElementById('attachment-section');
             const filesListDiv = document.getElementById('d-files-list');
             const pdfContainer = document.getElementById('pdf-viewer-container');
@@ -903,8 +939,8 @@
                     fileRow.style.gap = '10px';
             
                     fileRow.innerHTML = `
-                        <button class="btn-primary" style="padding: 5px 10px; font-size: 13px;" onclick="previewPDF('${file.url}', '${file.type}')">👁️ Xem trực tiếp</button>
-                        <a href="${file.url}" target="_blank" class="btn-info" style="padding: 5px 10px; font-size: 13px; text-decoration: none; color: white;">🔗 Mở tab mới</a>
+                        <button class="btn-primary" style="padding: 5px 10px; font-size: 13px;" onclick="previewFileFromDB('${file.id}', '${file.type}')">👁️ Xem (PDF)</button>
+                        <button class="btn-info" style="padding: 5px 10px; font-size: 13px;" onclick="downloadFileFromDB('${file.id}', '${file.name}')">⬇️ Tải về</button>
                         <span style="color: #dc3545; font-weight: bold;">📄 ${file.name}</span>
                     `;
                     filesListDiv.appendChild(fileRow);
@@ -1015,19 +1051,44 @@
             if(!isRefresh) showScreen('detail-screen');
         }
 
-        // --- Hàm mở xem file PDF ---
-        function previewPDF(url, type) {
+        // --- CÁC HÀM XỬ LÝ LẤY FILE TỪ DATABASE ---
+        function previewFileFromDB(fileId, type) {
             const pdfContainer = document.getElementById('pdf-viewer-container');
             const iframe = document.getElementById('pdf-iframe');
-            
-            if ((type && type.includes('pdf')) || url.toLowerCase().includes('.pdf')) {
-                iframe.src = url;
-                pdfContainer.style.display = 'block';
-                pdfContainer.scrollIntoView({ behavior: 'smooth' });
-            } else {
-                alert("Định dạng này không hỗ trợ xem trực tiếp. Hệ thống sẽ mở trong tab mới để bạn tải về.");
-                window.open(url, '_blank');
+            pdfContainer.style.display = 'none';
+
+            if (!type || !type.includes('pdf')) {
+                alert("Hệ thống chỉ hỗ trợ xem trực tiếp file PDF. Xin vui lòng bấm 'Tải về' đối với file Word/Excel.");
+                return;
             }
+
+            iframe.src = ""; // reset
+            db.ref(`${PAGE_ID}_files/${fileId}`).once('value').then(snap => {
+                const dataUrl = snap.val();
+                if (dataUrl) {
+                    iframe.src = dataUrl;
+                    pdfContainer.style.display = 'block';
+                    pdfContainer.scrollIntoView({ behavior: 'smooth' });
+                } else {
+                    alert("Không tìm thấy dữ liệu file trên máy chủ!");
+                }
+            }).catch(e => { alert("Có lỗi khi lấy file."); });
+        }
+
+        function downloadFileFromDB(fileId, fileName) {
+            db.ref(`${PAGE_ID}_files/${fileId}`).once('value').then(snap => {
+                const dataUrl = snap.val();
+                if (dataUrl) {
+                    const a = document.createElement("a");
+                    a.href = dataUrl;
+                    a.download = fileName;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                } else {
+                    alert("Không tìm thấy dữ liệu file trên máy chủ!");
+                }
+            }).catch(e => { alert("Có lỗi khi tải file."); });
         }
 
         function populateInteractionTargets(m) { 
