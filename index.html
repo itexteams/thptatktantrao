@@ -8,6 +8,8 @@
     <!-- KẾT NỐI THƯ VIỆN FIREBASE -->
     <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+    <!-- THÊM THƯ VIỆN FIREBASE STORAGE -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
 
     <!-- KẾT NỐI THƯ VIỆN VẼ BIỂU ĐỒ CHART.JS -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -321,7 +323,15 @@
             </div>
         </div>
 
-        <button class="btn-success" onclick="saveItem()">Đăng / Lưu trữ</button>
+        <!-- ĐÍNH KÈM VĂN BẢN (TÍNH NĂNG MỚI) -->
+        <div style="background: #e9ecef; padding: 15px; border-radius: 5px; margin-bottom: 15px; border: 1px solid #ccc;">
+            <h4 style="margin-top: 0; color: #0056b3;">Đính kèm văn bản (PDF, DOCX...)</h4>
+            <input type="file" id="m-files" multiple onchange="handleFileUpload(event)">
+            <div id="upload-status" style="margin-top: 10px; font-size: 13px; color: #d33;"></div>
+            <ul id="file-list-preview" style="list-style: none; padding: 0; margin-top: 10px;"></ul>
+        </div>
+
+        <button class="btn-success" id="btn-save-item" onclick="saveItem()">Đăng / Lưu trữ</button>
         <button class="btn-danger" onclick="showScreen('main-app')">Hủy</button>
     </div>
 
@@ -383,7 +393,16 @@
             </div>
         </div>
 
-        <!-- KHU VỰC TƯƠNG TÁC BÊN DƯỚI -->
+        <!-- KHU VỰC TƯƠNG TÁC BÊN DƯỚI (VÀ FILE ĐÍNH KÈM) -->
+        <div class="no-print" id="attachment-section" style="margin-top: 20px; display: none;">
+            <h4 style="background-color: #f8f9fa; border-left: 4px solid #dc3545; padding: 10px; margin-bottom: 10px;">Tài liệu đính kèm:</h4>
+            <div id="d-files-list"></div>
+            <!-- Vùng hiển thị PDF nội tuyến -->
+            <div id="pdf-viewer-container" style="display: none; margin-top: 15px; border: 1px solid #ccc; height: 600px;">
+                <iframe id="pdf-iframe" style="width: 100%; height: 100%; border: none;"></iframe>
+            </div>
+        </div>
+
         <div class="no-print" style="margin-top: 30px; border-top: 2px solid #ccc; padding-top: 15px;">
             <h4 style="font-family: 'Segoe UI', sans-serif; color: #0056b3;">Đóng góp ý kiến:</h4>
             <div style="display: flex; gap: 10px; margin-bottom: 5px; align-items: center;">
@@ -481,12 +500,21 @@
             measurementId: "G-TZB62HZQ7X"
         };
         firebase.initializeApp(firebaseConfig);
+        
         const db = firebase.database();
+        const storage = firebase.storage(); 
+
+        // ==========================================
+        // MÃ ĐỊNH DANH TRANG (PAGE_ID)
+        // Đổi mã này khi nhân bản sang trang khác (VD: 'tovan', 'lyhoa', ...)
+        const PAGE_ID = 'toantin'; 
+        // ==========================================
 
         let currentUser = { id: '', name: '', role: '', username: '' };
         let currentMeetingId = null;
-        let currentViewType = 'meeting'; // 'meeting' or 'document'
+        let currentViewType = 'meeting'; 
         let currentCreateType = 'meeting';
+        let uploadedFiles = []; // Mảng tạm lưu file đính kèm
         
         let editingMemberIndex = -1; let viewingTaskTeacherIndex = -1; let editingPlanIndex = -1; 
         let plans = []; let meetings = []; let documentsData = []; let membersData = [];
@@ -506,9 +534,9 @@
             { name: "Phạm Ngọc Chiến", role: "Tổ trưởng", subject: "Toán", task: "Chủ tọa", username: "totruong", password: "123", tasks: [], yearlyEval: "Chưa đánh giá" }
         ];
 
-        db.ref('truong_plans').on('value', snapshot => { const data = snapshot.val(); plans = data ? (Array.isArray(data) ? data : Object.values(data)) : []; if (document.getElementById('main-app').classList.contains('active')) renderPlans(); });
+        db.ref(`${PAGE_ID}_plans`).on('value', snapshot => { const data = snapshot.val(); plans = data ? (Array.isArray(data) ? data : Object.values(data)) : []; if (document.getElementById('main-app').classList.contains('active')) renderPlans(); });
         
-        db.ref('truong_meetings').on('value', snapshot => { 
+        db.ref(`${PAGE_ID}_meetings`).on('value', snapshot => { 
             const data = snapshot.val(); meetings = data ? (Array.isArray(data) ? data : Object.values(data)) : []; 
             if (document.getElementById('main-app').classList.contains('active')) { 
                 renderMeetings(); 
@@ -519,7 +547,7 @@
             } 
         });
 
-        db.ref('truong_documents').on('value', snapshot => { 
+        db.ref(`${PAGE_ID}_documents`).on('value', snapshot => { 
             const data = snapshot.val(); documentsData = data ? (Array.isArray(data) ? data : Object.values(data)) : []; 
             if (document.getElementById('main-app').classList.contains('active')) { 
                 renderDocuments(); 
@@ -530,15 +558,14 @@
             } 
         });
 
-        db.ref('truong_members').on('value', snapshot => { const data = snapshot.val(); if (!data) { db.ref('truong_members').set(defaultMembers); membersData = defaultMembers; } else { membersData = Array.isArray(data) ? data : Object.values(data); } membersData.forEach(m => { if (!m.tasks) m.tasks = []; else if (!Array.isArray(m.tasks)) m.tasks = Object.values(m.tasks); if (!m.yearlyEval) m.yearlyEval = "Chưa đánh giá"; }); if (document.getElementById('main-app').classList.contains('active')) { renderMembers(); renderTaskOverview(); if (viewingTaskTeacherIndex >= 0 && document.getElementById('task-detail').style.display === 'block') renderTeacherTasks(); if (document.getElementById('tab-stats-content').style.display === 'block') renderStats(); } });
-        db.ref('truong_settings/points').on('value', snapshot => { if(snapshot.val()) evalPoints = snapshot.val(); if (document.getElementById('main-app').classList.contains('active') && document.getElementById('tab-stats-content').style.display === 'block') renderStats(); });
+        db.ref(`${PAGE_ID}_members`).on('value', snapshot => { const data = snapshot.val(); if (!data) { db.ref(`${PAGE_ID}_members`).set(defaultMembers); membersData = defaultMembers; } else { membersData = Array.isArray(data) ? data : Object.values(data); } membersData.forEach(m => { if (!m.tasks) m.tasks = []; else if (!Array.isArray(m.tasks)) m.tasks = Object.values(m.tasks); if (!m.yearlyEval) m.yearlyEval = "Chưa đánh giá"; }); if (document.getElementById('main-app').classList.contains('active')) { renderMembers(); renderTaskOverview(); if (viewingTaskTeacherIndex >= 0 && document.getElementById('task-detail').style.display === 'block') renderTeacherTasks(); if (document.getElementById('tab-stats-content').style.display === 'block') renderStats(); } });
+        db.ref(`${PAGE_ID}_settings/points`).on('value', snapshot => { if(snapshot.val()) evalPoints = snapshot.val(); if (document.getElementById('main-app').classList.contains('active') && document.getElementById('tab-stats-content').style.display === 'block') renderStats(); });
 
         function formatParagraphs(text) {
             if (!text) return ''; 
             let paragraphs = text.split(/\n+/).filter(p => p.trim() !== '');
             return paragraphs.map(p => { 
                 if(p.trim() === '[BANG]') return p;
-                // Auto Bolding for list numbers like "1. ", "I. ", "a) "
                 let formatted = p.replace(/^((?:[IVX]+|\d+(?:\.\d+)*|[a-z])(?:\.|\)))\s+/i, '<b>$1 </b> ');
                 return `<p>${formatted}</p>`; 
             }).join('');
@@ -621,30 +648,88 @@
         
         function insertPlaceholder() { const contentArea = document.getElementById('m-content'); const cursorPosition = contentArea.selectionStart; const textBefore = contentArea.value.substring(0, cursorPosition); const textAfter = contentArea.value.substring(cursorPosition); contentArea.value = textBefore + (textBefore.endsWith('\n') || textBefore === '' ? '' : '\n') + "[BANG]\n" + textAfter; contentArea.focus(); }
 
+        // --- Hàm xử lý tải file lên Firebase Storage ---
+        async function handleFileUpload(event) {
+            const files = event.target.files;
+            const statusDiv = document.getElementById('upload-status');
+            const previewList = document.getElementById('file-list-preview');
+            const saveBtn = document.getElementById('btn-save-item');
+            
+            if (files.length === 0) return;
+            statusDiv.innerHTML = "Đang tải file lên... Vui lòng đợi!";
+            saveBtn.disabled = true; // Khóa nút Đăng
+
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                // Sử dụng PAGE_ID để tạo thư mục độc lập
+                const storageRef = storage.ref(`${PAGE_ID}_vanban/${Date.now()}_${file.name}`);
+                
+                try {
+                    const snapshot = await storageRef.put(file);
+                    const downloadURL = await snapshot.ref.getDownloadURL();
+                    
+                    uploadedFiles.push({
+                        name: file.name,
+                        url: downloadURL,
+                        type: file.type
+                    });
+                    
+                    previewList.innerHTML += `<li style="margin-bottom: 5px; color: green; font-weight: bold;">✅ ${file.name}</li>`;
+                } catch (error) {
+                    console.error("Lỗi up file:", error);
+                    alert("Lỗi tải lên: " + file.name);
+                }
+            }
+            
+            statusDiv.innerHTML = "<span style='color: green; font-weight: bold;'>Đã tải lên xong!</span>";
+            saveBtn.disabled = false; // Mở lại nút Đăng
+        }
+
         function saveItem() {
             const title = document.getElementById('m-title').value.trim(); const time = document.getElementById('m-time').value; const deadline = document.getElementById('m-deadline').value; const content = document.getElementById('m-content').value.trim();
             if (!title || !content) return alert('Nhập đủ Tiêu đề và Nội dung!');
             
-            const newItem = { id: Date.now(), title: title, time: time.replace('T', ' '), deadline: deadline, content: content, conclusion: "", host: currentUser.name, comments: [], dynamicTable: dynamicTableData, tableConfig: { colWidths: dynamicColWidths, rowHeights: dynamicRowHeights } };
+            const newItem = { 
+                id: Date.now(), 
+                title: title, 
+                time: time.replace('T', ' '), 
+                deadline: deadline, 
+                content: content, 
+                conclusion: "", 
+                host: currentUser.name, 
+                comments: [], 
+                dynamicTable: dynamicTableData, 
+                tableConfig: { colWidths: dynamicColWidths, rowHeights: dynamicRowHeights },
+                files: uploadedFiles // Lưu mảng file đính kèm
+            };
             
             if (currentCreateType === 'meeting') {
                 meetings.push(newItem);
-                db.ref('truong_meetings').set(meetings).then(finishSave);
+                db.ref(`${PAGE_ID}_meetings`).set(meetings).then(finishSave);
             } else {
                 documentsData.push(newItem);
-                db.ref('truong_documents').set(documentsData).then(finishSave);
+                db.ref(`${PAGE_ID}_documents`).set(documentsData).then(finishSave);
             }
         }
+
         function finishSave() {
-            document.getElementById('m-title').value = ''; document.getElementById('m-time').value = ''; document.getElementById('m-deadline').value = ''; document.getElementById('m-content').value = ''; showScreen('main-app');
+            document.getElementById('m-title').value = ''; 
+            document.getElementById('m-time').value = ''; 
+            document.getElementById('m-deadline').value = ''; 
+            document.getElementById('m-content').value = ''; 
+            document.getElementById('m-files').value = '';
+            document.getElementById('file-list-preview').innerHTML = '';
+            document.getElementById('upload-status').innerHTML = '';
+            uploadedFiles = []; // Reset mảng file sau khi lưu
+            showScreen('main-app');
         }
 
         function deleteItem(id, type) { 
             if (confirm(`XÓA bản ghi này?`)) { 
                 if (type === 'meeting') {
-                    meetings = meetings.filter(x => x.id !== id); db.ref('truong_meetings').set(meetings); 
+                    meetings = meetings.filter(x => x.id !== id); db.ref(`${PAGE_ID}_meetings`).set(meetings); 
                 } else {
-                    documentsData = documentsData.filter(x => x.id !== id); db.ref('truong_documents').set(documentsData); 
+                    documentsData = documentsData.filter(x => x.id !== id); db.ref(`${PAGE_ID}_documents`).set(documentsData); 
                 }
             } 
         }
@@ -658,7 +743,10 @@
                 let isLocked = (m.deadline && new Date().getTime() > new Date(m.deadline).getTime());
                 let actionBtns = (isLocked && currentUser.role !== 'admin') ? `<button class="btn-disabled">Đã khóa</button>` : `<button onclick="viewItem(${m.id}, 'meeting')">Tham gia / Xem</button>`;
                 if (currentUser.role === 'admin') actionBtns += `<button class="btn-danger" style="margin-left: 5px;" onclick="deleteItem(${m.id}, 'meeting')">Xóa</button>`;
-                div.innerHTML = `<div><h4 style="margin: 0 0 5px 0; color: #0056b3;">${m.title} ${isLocked ? '<span style="color: red; font-size:12px;">(Đã khóa)</span>' : ''}</h4><small>Chủ tọa: ${m.host} | Số ý kiến: ${commentCount}</small></div><div>${actionBtns}</div>`; listDiv.appendChild(div);
+                
+                let fileIndicator = (m.files && m.files.length > 0) ? `<span style="margin-left: 10px; color: #28a745; font-size: 12px; font-weight: bold;">📎 ${m.files.length} Tệp đính kèm</span>` : '';
+                
+                div.innerHTML = `<div><h4 style="margin: 0 0 5px 0; color: #0056b3;">${m.title} ${isLocked ? '<span style="color: red; font-size:12px;">(Đã khóa)</span>' : ''}</h4><small>Chủ tọa: ${m.host} | Số ý kiến: ${commentCount} ${fileIndicator}</small></div><div>${actionBtns}</div>`; listDiv.appendChild(div);
             });
         }
         
@@ -670,12 +758,18 @@
                 let isLocked = (m.deadline && new Date().getTime() > new Date(m.deadline).getTime());
                 let actionBtns = (isLocked && currentUser.role !== 'admin') ? `<button class="btn-disabled">Đã khóa</button>` : `<button onclick="viewItem(${m.id}, 'document')">Tham gia / Xem</button>`;
                 if (currentUser.role === 'admin') actionBtns += `<button class="btn-danger" style="margin-left: 5px;" onclick="deleteItem(${m.id}, 'document')">Xóa</button>`;
-                div.innerHTML = `<div><h4 style="margin: 0 0 5px 0; color: #0056b3;">${m.title} ${isLocked ? '<span style="color: red; font-size:12px;">(Đã khóa)</span>' : ''}</h4><small>Người ban hành: ${m.host} | Số ý kiến: ${commentCount}</small></div><div>${actionBtns}</div>`; listDiv.appendChild(div);
+                
+                let fileIndicator = (m.files && m.files.length > 0) ? `<span style="margin-left: 10px; color: #28a745; font-size: 12px; font-weight: bold;">📎 ${m.files.length} Tệp đính kèm</span>` : '';
+
+                div.innerHTML = `<div><h4 style="margin: 0 0 5px 0; color: #0056b3;">${m.title} ${isLocked ? '<span style="color: red; font-size:12px;">(Đã khóa)</span>' : ''}</h4><small>Người ban hành: ${m.host} | Số ý kiến: ${commentCount} ${fileIndicator}</small></div><div>${actionBtns}</div>`; listDiv.appendChild(div);
             });
         }
 
+        function getContextRef() { 
+            return currentViewType === 'meeting' ? `${PAGE_ID}_meetings` : `${PAGE_ID}_documents`; 
+        }
+
         function getContextArray() { return currentViewType === 'meeting' ? meetings : documentsData; }
-        function getContextRef() { return currentViewType === 'meeting' ? 'truong_meetings' : 'truong_documents'; }
 
         // --- RENDER BẢNG RA BẢN IN ---
         function generateDynamicTableHtml(tableData, tableConfig) {
@@ -791,6 +885,34 @@
             const arr = getContextArray();
             const m = arr.find(x => x.id === id);
             
+            // Xử lý hiển thị danh sách file đính kèm
+            const attachmentSection = document.getElementById('attachment-section');
+            const filesListDiv = document.getElementById('d-files-list');
+            const pdfContainer = document.getElementById('pdf-viewer-container');
+            
+            if (m.files && m.files.length > 0) {
+                attachmentSection.style.display = 'block';
+                filesListDiv.innerHTML = '';
+                pdfContainer.style.display = 'none'; // Ẩn iframe lúc đầu
+            
+                m.files.forEach(file => {
+                    const fileRow = document.createElement('div');
+                    fileRow.style.marginBottom = '8px';
+                    fileRow.style.display = 'flex';
+                    fileRow.style.alignItems = 'center';
+                    fileRow.style.gap = '10px';
+            
+                    fileRow.innerHTML = `
+                        <button class="btn-primary" style="padding: 5px 10px; font-size: 13px;" onclick="previewPDF('${file.url}', '${file.type}')">👁️ Xem trực tiếp</button>
+                        <a href="${file.url}" target="_blank" class="btn-info" style="padding: 5px 10px; font-size: 13px; text-decoration: none; color: white;">🔗 Mở tab mới</a>
+                        <span style="color: #dc3545; font-weight: bold;">📄 ${file.name}</span>
+                    `;
+                    filesListDiv.appendChild(fileRow);
+                });
+            } else {
+                attachmentSection.style.display = 'none';
+            }
+
             if(!isRefresh) {
                 document.getElementById('print-area').innerHTML = printAreaTemplate; 
                 
@@ -891,6 +1013,21 @@
                 membersData.forEach(mb => { if(mb.username !== 'admin') hostSelect.innerHTML += `<option value="${mb.name}">${mb.name}</option>`; }); 
             }
             if(!isRefresh) showScreen('detail-screen');
+        }
+
+        // --- Hàm mở xem file PDF ---
+        function previewPDF(url, type) {
+            const pdfContainer = document.getElementById('pdf-viewer-container');
+            const iframe = document.getElementById('pdf-iframe');
+            
+            if ((type && type.includes('pdf')) || url.toLowerCase().includes('.pdf')) {
+                iframe.src = url;
+                pdfContainer.style.display = 'block';
+                pdfContainer.scrollIntoView({ behavior: 'smooth' });
+            } else {
+                alert("Định dạng này không hỗ trợ xem trực tiếp. Hệ thống sẽ mở trong tab mới để bạn tải về.");
+                window.open(url, '_blank');
+            }
         }
 
         function populateInteractionTargets(m) { 
@@ -998,28 +1135,28 @@
         }
 
         function renderPlans() { const tbody = document.getElementById('plan-list'); tbody.innerHTML = ''; if (plans.length === 0) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#666;">Chưa có kế hoạch</td></tr>'; return; } plans.forEach((pl, index) => { const tr = document.createElement('tr'); let adminCols = (currentUser.role === 'admin') ? `<td class="admin-only-cell" style="text-align: center;"><button class="btn-warning" style="width:100%; margin-bottom:5px;" onclick="editPlan(${index})">Sửa</button><button class="btn-danger" style="width:100%;" onclick="deletePlan(${index})">Xóa</button></td>` : ''; tr.innerHTML = `<td style="text-align: center;"><b>${index + 1}</b></td><td style="text-align: center;"><b>${pl.time}</b></td><td><div class="no-indent-text">${formatParagraphs(pl.content)}</div></td><td><div class="no-indent-text">${formatParagraphs(pl.note || '')}</div></td>${adminCols}`; tbody.appendChild(tr); }); }
-        function savePlan() { const time = document.getElementById('pl-time').value.trim(); const content = document.getElementById('pl-content').value.trim(); const note = document.getElementById('pl-note').value.trim(); if (!time || !content) { alert('Vui lòng nhập Thời gian và Nội dung!'); return; } if (editingPlanIndex >= 0) plans[editingPlanIndex] = { time, content, note }; else plans.push({ time, content, note }); db.ref('truong_plans').set(plans).then(() => { cancelEditPlan(); alert(editingPlanIndex >= 0 ? "Đã cập nhật!" : "Đã thêm mới!"); }); }
+        function savePlan() { const time = document.getElementById('pl-time').value.trim(); const content = document.getElementById('pl-content').value.trim(); const note = document.getElementById('pl-note').value.trim(); if (!time || !content) { alert('Vui lòng nhập Thời gian và Nội dung!'); return; } if (editingPlanIndex >= 0) plans[editingPlanIndex] = { time, content, note }; else plans.push({ time, content, note }); db.ref(`${PAGE_ID}_plans`).set(plans).then(() => { cancelEditPlan(); alert(editingPlanIndex >= 0 ? "Đã cập nhật!" : "Đã thêm mới!"); }); }
         function editPlan(index) { editingPlanIndex = index; const pl = plans[index]; document.getElementById('pl-time').value = pl.time || ''; document.getElementById('pl-content').value = pl.content || ''; document.getElementById('pl-note').value = pl.note || ''; document.getElementById('form-plan-title').innerText = "Sửa kế hoạch (STT " + (index + 1) + ")"; document.getElementById('btn-save-plan').innerText = "Cập nhật"; document.getElementById('btn-save-plan').className = "btn-warning"; document.getElementById('btn-cancel-edit-plan').style.display = "inline-block"; document.getElementById('admin-plan-form').scrollIntoView({ behavior: 'smooth' }); }
         function cancelEditPlan() { editingPlanIndex = -1; document.getElementById('pl-time').value = ''; document.getElementById('pl-content').value = ''; document.getElementById('pl-note').value = ''; document.getElementById('form-plan-title').innerText = "+ Thêm Kế hoạch mới"; document.getElementById('btn-save-plan').innerText = "Lưu kế hoạch"; document.getElementById('btn-save-plan').className = "btn-success"; document.getElementById('btn-cancel-edit-plan').style.display = "none"; }
-        function deletePlan(index) { if (confirm("Xóa kế hoạch này?")) { plans.splice(index, 1); db.ref('truong_plans').set(plans); } }
+        function deletePlan(index) { if (confirm("Xóa kế hoạch này?")) { plans.splice(index, 1); db.ref(`${PAGE_ID}_plans`).set(plans); } }
 
         function renderMembers() { const tbody = document.getElementById('member-list'); tbody.innerHTML = ''; membersData.forEach((mb, index) => { if (currentUser.username !== 'admin' && mb.username === 'admin') return; const tr = document.createElement('tr'); let adminCols = (currentUser.role === 'admin') ? `<td class="admin-only-cell">${mb.username||''}</td><td class="admin-only-cell">${mb.password||''}</td><td class="admin-only-cell" style="text-align: center;"><button class="btn-warning" style="width:100%; margin-bottom:5px;" onclick="editMember(${index})">Sửa</button><button class="btn-danger" style="width:100%;" onclick="deleteMember(${index})">Xóa</button></td>` : ''; tr.innerHTML = `<td><b>${mb.name}</b></td><td>${mb.role}</td><td>${mb.subject}</td><td>${mb.task}</td>${adminCols}`; tbody.appendChild(tr); }); }
-        function saveMember() { const name = document.getElementById('mb-name').value.trim(); const role = document.getElementById('mb-role').value.trim(); const subject = document.getElementById('mb-subject').value.trim(); const task = document.getElementById('mb-task').value.trim(); const username = document.getElementById('mb-username').value.trim(); const password = document.getElementById('mb-password').value.trim(); if(!name || !role) return alert('Nhập ít nhất Họ tên và Chức vụ!'); if (membersData.some((m, idx) => m.username === username && idx !== editingMemberIndex && username !== "")) return alert("Tên đăng nhập đã tồn tại!"); if (editingMemberIndex >= 0) { membersData[editingMemberIndex] = { ...membersData[editingMemberIndex], name, role, subject, task, username, password }; } else { membersData.push({ name, role, subject, task, username, password, tasks: [], yearlyEval: "Chưa đánh giá" }); } db.ref('truong_members').set(membersData).then(() => { cancelEdit(); }); }
+        function saveMember() { const name = document.getElementById('mb-name').value.trim(); const role = document.getElementById('mb-role').value.trim(); const subject = document.getElementById('mb-subject').value.trim(); const task = document.getElementById('mb-task').value.trim(); const username = document.getElementById('mb-username').value.trim(); const password = document.getElementById('mb-password').value.trim(); if(!name || !role) return alert('Nhập ít nhất Họ tên và Chức vụ!'); if (membersData.some((m, idx) => m.username === username && idx !== editingMemberIndex && username !== "")) return alert("Tên đăng nhập đã tồn tại!"); if (editingMemberIndex >= 0) { membersData[editingMemberIndex] = { ...membersData[editingMemberIndex], name, role, subject, task, username, password }; } else { membersData.push({ name, role, subject, task, username, password, tasks: [], yearlyEval: "Chưa đánh giá" }); } db.ref(`${PAGE_ID}_members`).set(membersData).then(() => { cancelEdit(); }); }
         function editMember(index) { editingMemberIndex = index; const mb = membersData[index]; document.getElementById('mb-name').value = mb.name || ''; document.getElementById('mb-role').value = mb.role || ''; document.getElementById('mb-subject').value = mb.subject || ''; document.getElementById('mb-task').value = mb.task || ''; document.getElementById('mb-username').value = mb.username || ''; document.getElementById('mb-password').value = mb.password || ''; document.getElementById('form-member-title').innerText = "Sửa tài khoản"; document.getElementById('btn-save-member').innerText = "Cập nhật"; document.getElementById('btn-save-member').className = "btn-warning"; document.getElementById('btn-cancel-edit').style.display = "inline-block"; document.getElementById('admin-member-form').scrollIntoView({ behavior: 'smooth' }); }
         function cancelEdit() { editingMemberIndex = -1; document.getElementById('mb-name').value = ''; document.getElementById('mb-role').value = ''; document.getElementById('mb-subject').value = ''; document.getElementById('mb-task').value = ''; document.getElementById('mb-username').value = ''; document.getElementById('mb-password').value = ''; document.getElementById('form-member-title').innerText = "+ Thêm tài khoản mới"; document.getElementById('btn-save-member').innerText = "Lưu thành viên"; document.getElementById('btn-save-member').className = "btn-success"; document.getElementById('btn-cancel-edit').style.display = "none"; }
-        function deleteMember(index) { if (membersData[index].username === 'admin') return alert("Không thể xóa Quản trị viên!"); if (confirm("Xóa thành viên này?")) { membersData.splice(index, 1); db.ref('truong_members').set(membersData); } }
+        function deleteMember(index) { if (membersData[index].username === 'admin') return alert("Không thể xóa Quản trị viên!"); if (confirm("Xóa thành viên này?")) { membersData.splice(index, 1); db.ref(`${PAGE_ID}_members`).set(membersData); } }
 
         function renderTaskOverview() { const tbody = document.getElementById('task-overview-list'); tbody.innerHTML = ''; membersData.forEach((mb, index) => { if (currentUser.username !== 'admin' && mb.username === 'admin') return; const tr = document.createElement('tr'); tr.innerHTML = `<td><b>${mb.name}</b><br><small style="color:#666">${mb.role}</small></td><td style="text-align: center; font-size: 18px; font-weight: bold;">${mb.tasks ? mb.tasks.length : 0}</td><td><span class="badge ${getBadgeClass(mb.yearlyEval)}">${mb.yearlyEval || 'Chưa đánh giá'}</span></td><td style="text-align: center;"><button class="btn-info" onclick="openTaskDetail(${index})">Chi tiết</button></td>`; tbody.appendChild(tr); }); }
         function openTaskDetail(teacherIndex) { viewingTaskTeacherIndex = teacherIndex; document.getElementById('task-overview').style.display = 'none'; document.getElementById('task-detail').style.display = 'block'; const mb = membersData[teacherIndex]; document.getElementById('td-teacher-name').innerText = mb.name; if (currentUser.role === 'admin') { document.getElementById('td-yearly-eval').value = mb.yearlyEval || 'Chưa đánh giá'; document.getElementById('td-yearly-view-only').style.display = 'none'; } else { document.getElementById('td-yearly-view-only').innerText = `Xếp loại năm: ${mb.yearlyEval}`; document.getElementById('td-yearly-view-only').style.display = 'block'; } renderTeacherTasks(); }
         function closeTaskDetail() { viewingTaskTeacherIndex = -1; document.getElementById('task-overview').style.display = 'block'; document.getElementById('task-detail').style.display = 'none'; renderTaskOverview(); }
         function renderTeacherTasks() { const mb = membersData[viewingTaskTeacherIndex]; const tbody = document.getElementById('td-task-list'); tbody.innerHTML = ''; let counts = { 'Chưa hoàn thành': 0, 'Hoàn thành': 0, 'Hoàn thành tốt': 0, 'Hoàn thành xuất sắc': 0, 'Chưa đánh giá': 0 }; if (!mb.tasks || mb.tasks.length === 0) { tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #666;">Chưa có nhiệm vụ.</td></tr>'; } else { mb.tasks.forEach((t, i) => { counts[t.status || 'Chưa đánh giá']++; const isOwnerOrAdmin = (currentUser.username === mb.username) || (currentUser.role === 'admin'); let statusHtml = currentUser.role === 'admin' ? `<select id="t-status-${i}" style="margin:0; padding:5px;"><option value="Chưa đánh giá" ${t.status === 'Chưa đánh giá' ? 'selected' : ''}>Chưa đánh giá</option><option value="Chưa hoàn thành" ${t.status === 'Chưa hoàn thành' ? 'selected' : ''}>Chưa hoàn thành</option><option value="Hoàn thành" ${t.status === 'Hoàn thành' ? 'selected' : ''}>Hoàn thành</option><option value="Hoàn thành tốt" ${t.status === 'Hoàn thành tốt' ? 'selected' : ''}>Hoàn thành tốt</option><option value="Hoàn thành xuất sắc" ${t.status === 'Hoàn thành xuất sắc' ? 'selected' : ''}>Hoàn thành xuất sắc</option></select>` : `<span class="badge ${getBadgeClass(t.status)}">${t.status || 'Chưa đánh giá'}</span>`; let noteHtml = currentUser.role === 'admin' ? `<textarea id="t-note-${i}" rows="2">${t.note || ''}</textarea>` : `<div class="format-text" style="font-size: 13px;">${formatParagraphs(t.note || '')}</div>`; let actionHtml = isOwnerOrAdmin ? `<button class="btn-success" style="width: 100%; margin-bottom: 5px;" onclick="updateTask(${i})">Lưu</button>` : ''; if (currentUser.role === 'admin') actionHtml += `<button class="btn-danger" style="width: 100%;" onclick="deleteTask(${i})">Xóa</button>`; const tr = document.createElement('tr'); tr.innerHTML = `<td><b>${t.name}</b><br><small style="color:#666">Giao: ${t.date}</small></td><td><textarea id="t-result-${i}" rows="2" ${isOwnerOrAdmin ? '' : 'disabled'}>${t.result || ''}</textarea></td><td>${statusHtml}</td><td>${noteHtml}</td><td style="text-align: center;">${actionHtml}</td>`; tbody.appendChild(tr); }); } document.getElementById('td-statistics').innerHTML = `<b>Tổng: ${mb.tasks ? mb.tasks.length : 0} nhiệm vụ</b> <br><small>C.Đánh giá: ${counts['Chưa đánh giá']} | Chưa HT: ${counts['Chưa hoàn thành']} | Hoàn thành: ${counts['Hoàn thành']} | HT Tốt: ${counts['Hoàn thành tốt']} | HT Xuất sắc: ${counts['Hoàn thành xuất sắc']}</small>`; }
-        function assignTask() { const taskName = document.getElementById('new-task-name').value.trim(); if (!taskName) return alert("Nhập tên nhiệm vụ!"); const now = new Date(); if(!membersData[viewingTaskTeacherIndex].tasks) membersData[viewingTaskTeacherIndex].tasks = []; membersData[viewingTaskTeacherIndex].tasks.push({ name: taskName, date: now.getDate() + '/' + (now.getMonth()+1) + '/' + now.getFullYear(), result: "", status: "Chưa đánh giá", note: "" }); db.ref('truong_members').set(membersData).then(() => { document.getElementById('new-task-name').value = ''; }); }
-        function updateTask(i) { const mb = membersData[viewingTaskTeacherIndex]; if (document.getElementById(`t-result-${i}`)) mb.tasks[i].result = document.getElementById(`t-result-${i}`).value.trim(); if (document.getElementById(`t-status-${i}`)) mb.tasks[i].status = document.getElementById(`t-status-${i}`).value; if (document.getElementById(`t-note-${i}`)) mb.tasks[i].note = document.getElementById(`t-note-${i}`).value.trim(); db.ref('truong_members').set(membersData).then(() => { alert("Đã lưu!"); }); }
-        function deleteTask(i) { if(confirm("Xóa nhiệm vụ?")) { membersData[viewingTaskTeacherIndex].tasks.splice(i, 1); db.ref('truong_members').set(membersData); } }
-        function saveYearlyEval() { membersData[viewingTaskTeacherIndex].yearlyEval = document.getElementById('td-yearly-eval').value; db.ref('truong_members').set(membersData).then(() => { alert("Đã chốt!"); }); }
+        function assignTask() { const taskName = document.getElementById('new-task-name').value.trim(); if (!taskName) return alert("Nhập tên nhiệm vụ!"); const now = new Date(); if(!membersData[viewingTaskTeacherIndex].tasks) membersData[viewingTaskTeacherIndex].tasks = []; membersData[viewingTaskTeacherIndex].tasks.push({ name: taskName, date: now.getDate() + '/' + (now.getMonth()+1) + '/' + now.getFullYear(), result: "", status: "Chưa đánh giá", note: "" }); db.ref(`${PAGE_ID}_members`).set(membersData).then(() => { document.getElementById('new-task-name').value = ''; }); }
+        function updateTask(i) { const mb = membersData[viewingTaskTeacherIndex]; if (document.getElementById(`t-result-${i}`)) mb.tasks[i].result = document.getElementById(`t-result-${i}`).value.trim(); if (document.getElementById(`t-status-${i}`)) mb.tasks[i].status = document.getElementById(`t-status-${i}`).value; if (document.getElementById(`t-note-${i}`)) mb.tasks[i].note = document.getElementById(`t-note-${i}`).value.trim(); db.ref(`${PAGE_ID}_members`).set(membersData).then(() => { alert("Đã lưu!"); }); }
+        function deleteTask(i) { if(confirm("Xóa nhiệm vụ?")) { membersData[viewingTaskTeacherIndex].tasks.splice(i, 1); db.ref(`${PAGE_ID}_members`).set(membersData); } }
+        function saveYearlyEval() { membersData[viewingTaskTeacherIndex].yearlyEval = document.getElementById('td-yearly-eval').value; db.ref(`${PAGE_ID}_members`).set(membersData).then(() => { alert("Đã chốt!"); }); }
 
         function enableEditPoints() { document.querySelectorAll('.point-input').forEach(el => el.disabled = false); document.getElementById('btn-edit-points').style.display = 'none'; document.getElementById('btn-save-points').style.display = 'inline-block'; }
-        function savePoints() { evalPoints.xs = parseFloat(document.getElementById('pt-xs').value)||0; evalPoints.tot = parseFloat(document.getElementById('pt-tot').value)||0; evalPoints.ht = parseFloat(document.getElementById('pt-ht').value)||0; evalPoints.cht = parseFloat(document.getElementById('pt-cht').value)||0; db.ref('truong_settings/points').set(evalPoints).then(() => { document.querySelectorAll('.point-input').forEach(el => el.disabled = true); document.getElementById('btn-edit-points').style.display = 'inline-block'; document.getElementById('btn-save-points').style.display = 'none'; alert("Đã cập nhật điểm!"); }); }
+        function savePoints() { evalPoints.xs = parseFloat(document.getElementById('pt-xs').value)||0; evalPoints.tot = parseFloat(document.getElementById('pt-tot').value)||0; evalPoints.ht = parseFloat(document.getElementById('pt-ht').value)||0; evalPoints.cht = parseFloat(document.getElementById('pt-cht').value)||0; db.ref(`${PAGE_ID}_settings/points`).set(evalPoints).then(() => { document.querySelectorAll('.point-input').forEach(el => el.disabled = true); document.getElementById('btn-edit-points').style.display = 'inline-block'; document.getElementById('btn-save-points').style.display = 'none'; alert("Đã cập nhật điểm!"); }); }
         function renderStats() { const tbody = document.getElementById('stats-table-list'); tbody.innerHTML = ''; document.getElementById('pt-xs').value = evalPoints.xs; document.getElementById('pt-tot').value = evalPoints.tot; document.getElementById('pt-ht').value = evalPoints.ht; document.getElementById('pt-cht').value = evalPoints.cht; let labels = []; let scores = []; membersData.forEach((mb) => { if (currentUser.username !== 'admin' && mb.username === 'admin') return; let xs = 0, tot = 0, ht = 0, cht = 0; if (mb.tasks) mb.tasks.forEach(t => { if (t.status === 'Hoàn thành xuất sắc') xs++; else if (t.status === 'Hoàn thành tốt') tot++; else if (t.status === 'Hoàn thành') ht++; else if (t.status === 'Chưa hoàn thành') cht++; }); let t = xs + tot + ht + cht; let s = (xs * evalPoints.xs) + (tot * evalPoints.tot) + (ht * evalPoints.ht) + (cht * evalPoints.cht); let avg = t > 0 ? parseFloat((s / t).toFixed(2)) : 0; labels.push(mb.name); scores.push(avg); const tr = document.createElement('tr'); tr.innerHTML = `<td><b>${mb.name}</b></td><td style="text-align: center; color: #b38600; font-weight: bold;">${xs}</td><td style="text-align: center; color: #28a745; font-weight: bold;">${tot}</td><td style="text-align: center; color: #007bff; font-weight: bold;">${ht}</td><td style="text-align: center; color: #dc3545; font-weight: bold;">${cht}</td><td style="text-align: center;"><b>${t}</b></td><td style="text-align: center; color: red; font-size: 16px;"><b>${avg}</b></td>`; tbody.appendChild(tr); }); const ctx = document.getElementById('evaluationChart').getContext('2d'); if (myChart) myChart.destroy(); myChart = new Chart(ctx, { type: 'bar', data: { labels: labels, datasets: [{ label: 'Điểm trung bình thi đua', data: scores, backgroundColor: '#17a2b8', borderColor: '#117a8b', borderWidth: 1 }] }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } }, plugins: { legend: { display: false } } } }); }
 
         function toggleEditPrint() { 
